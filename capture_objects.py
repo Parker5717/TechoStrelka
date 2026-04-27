@@ -42,6 +42,7 @@ import sys
 import argparse
 from datetime import datetime
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
 # Поддержка кириллицы в консоли Windows
 if sys.platform == 'win32':
@@ -55,16 +56,39 @@ if sys.platform == 'win32':
 # ══════════════════════════════════════════════════════════════════
 
 DEFAULT_CAPTURE_DIR = "captured_objects"
-FONT = cv2.FONT_HERSHEY_SIMPLEX
-FONT_SCALE = 0.7
-FONT_THICKNESS = 2
 
-# Цвета (BGR)
+# Используем PIL для поддержки кириллицы
+FONT_PATH = "static/Roboto-Regular.ttf"  # Путь к шрифту с поддержкой кириллицы
+FONT_SIZE = 28
+FONT_SIZE_SMALL = 20
+FONT_SIZE_LARGE = 32
+
+# Цвета (BGR для OpenCV, RGB для PIL)
 COLOR_TEXT = (255, 255, 255)
 COLOR_HIGHLIGHT = (0, 255, 255)  # жёлтый
 COLOR_SUCCESS = (0, 255, 0)      # зелёный
 COLOR_ERROR = (0, 0, 255)        # красный
 COLOR_BG = (40, 40, 50)          # тёмно-серый
+
+
+def draw_text_pil(frame, text, position, color, font_size=FONT_SIZE, font_path=FONT_PATH):
+    """Рисует текст на изображении с поддержкой кириллицы через PIL."""
+    # Конвертируем BGR в RGB для PIL
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(img_rgb)
+    draw = ImageDraw.Draw(pil_image)
+    
+    # Загружаем шрифт
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except:
+        font = ImageFont.load_default()
+    
+    # Рисуем текст (PIL использует RGB)
+    draw.text(position, text, fill=(color[2], color[1], color[0]), font=font)
+    
+    # Конвертируем обратно в BGR для OpenCV
+    return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
 
 class ObjectCaptureApp:
@@ -168,7 +192,7 @@ class ObjectCaptureApp:
         self.message_time = datetime.now().timestamp() + duration
     
     def draw_ui(self, frame: np.ndarray) -> np.ndarray:
-        """Рисует интерфейс поверх кадра."""
+        """Рисует интерфейс поверх кадра с поддержкой кириллицы."""
         h, w = frame.shape[:2]
         
         # Полупрозрачный фон для UI (верхняя часть)
@@ -182,17 +206,17 @@ class ObjectCaptureApp:
         y_offset = 40
         if self.current_object:
             text = f"ОБЪЕКТ: {self.current_object.upper()}"
-            cv2.putText(frame, text, (20, y_offset), FONT, FONT_SCALE, COLOR_HIGHLIGHT, FONT_THICKNESS)
+            frame = draw_text_pil(frame, text, (20, y_offset), COLOR_HIGHLIGHT, FONT_SIZE_LARGE)
             
             # Количество снимков этого объекта
             object_dir = self.capture_dir / self.current_object
             if object_dir.exists():
                 count = len(list(object_dir.glob("*.jpg")) + list(object_dir.glob("*.png")))
                 count_text = f"Снимков: {count}"
-                cv2.putText(frame, count_text, (20, y_offset + 35), FONT, 0.6, COLOR_TEXT, 1)
+                frame = draw_text_pil(frame, count_text, (20, y_offset + 35), COLOR_TEXT, FONT_SIZE_SMALL)
         else:
             text = "ОБЪЕКТ: НЕ ВЫБРАН (нажмите N)"
-            cv2.putText(frame, text, (20, y_offset), FONT, FONT_SCALE, COLOR_ERROR, FONT_THICKNESS)
+            frame = draw_text_pil(frame, text, (20, y_offset), COLOR_ERROR, FONT_SIZE_LARGE)
         
         # Список доступных объектов (справа)
         if self.object_folders:
@@ -201,11 +225,11 @@ class ObjectCaptureApp:
             for i, obj_name in enumerate(self.object_folders[:max_display]):
                 color = COLOR_HIGHLIGHT if obj_name == self.current_object else COLOR_TEXT
                 text = f"• {obj_name}"
-                cv2.putText(frame, text, (w - 250, list_y + i * 30), FONT, 0.5, color, 1)
+                frame = draw_text_pil(frame, text, (w - 250, list_y + i * 30), color, FONT_SIZE_SMALL)
             
             if len(self.object_folders) > max_display:
                 more_text = f"... ещё {len(self.object_folders) - max_display}"
-                cv2.putText(frame, more_text, (w - 250, list_y + max_display * 30), FONT, 0.4, COLOR_TEXT, 1)
+                frame = draw_text_pil(frame, more_text, (w - 250, list_y + max_display * 30), COLOR_TEXT, FONT_SIZE_SMALL)
         
         # Подсказки по управлению (низ экрана)
         hints_y = h - 60
@@ -224,12 +248,12 @@ class ObjectCaptureApp:
         
         for i, hint in enumerate(hints):
             x_pos = 20 + i * (w // 4)
-            cv2.putText(frame, hint, (x_pos, hints_y), FONT, 0.5, COLOR_TEXT, 1)
+            frame = draw_text_pil(frame, hint, (x_pos, hints_y), COLOR_TEXT, FONT_SIZE_SMALL)
         
         # Сообщение об успехе/ошибке
         if self.message and datetime.now().timestamp() < self.message_time:
             msg_y = ui_height + 50
-            cv2.putText(frame, self.message, (20, msg_y), FONT, 0.7, self.message_color, 2)
+            frame = draw_text_pil(frame, self.message, (20, msg_y), self.message_color, FONT_SIZE)
         
         # Рамка по краям кадра (визуальный акцент)
         cv2.rectangle(frame, (10, 10), (w - 10, h - 10), COLOR_TEXT, 1)
