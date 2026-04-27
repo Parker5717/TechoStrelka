@@ -43,6 +43,8 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+import threading
+import queue
 
 # Поддержка кириллицы в консоли Windows
 if sys.platform == 'win32':
@@ -103,6 +105,11 @@ class ObjectCaptureApp:
         self.capture_cooldown = 0.5  # секунд между снимками
         self.message = ""
         self.message_time = 0
+        
+        # Флаг и очередь для ввода имени объекта
+        self.waiting_for_input = False
+        self.input_queue = queue.Queue()
+        self.input_thread = None
         
         # Создаём директорию для сохранений
         self.capture_dir.mkdir(parents=True, exist_ok=True)
@@ -260,38 +267,61 @@ class ObjectCaptureApp:
         
         return frame
     
-    def prompt_object_name(self) -> str:
-        """Запрашивает у пользователя название объекта."""
+    def transliterate(self, text: str) -> str:
+        """Преобразует кириллицу в латиницу для имён файлов."""
+        translit_map = {
+            'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+            'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+            'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+            'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+            'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+            'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'Yo',
+            'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+            'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+            'Ф': 'F', 'Х': 'H', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Sch',
+            'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya'
+        }
+        
+        clean_name = ""
+        for c in text:
+            if c in translit_map:
+                clean_name += translit_map[c]
+            elif c.isalnum() or c in "-_":
+                clean_name += c
+            else:
+                clean_name += "_"
+        
+        return clean_name
+    
+    def input_worker(self):
+        """Поток для чтения ввода пользователя без блокировки основного потока."""
+        try:
+            name = input().strip().lower()
+            self.input_queue.put(name)
+        except Exception as e:
+            self.input_queue.put(None)
+    
+    def prompt_object_name_nonblocking(self) -> str:
+        """Запрашивает название объекта в неблокирующем режиме."""
         print("\n" + "="*60)
         print("Введите название объекта (например: кнопка, выключатель, шлем)")
         print("Можно использовать кириллицу! Будет преобразовано в латиницу.")
         print("Нажмите Enter для подтверждения или просто Enter для отмены")
         print("="*60)
+        print("Название объекта: ", end="", flush=True)
         
+        # Запускаем поток для ввода
+        self.input_thread = threading.Thread(target=self.input_worker, daemon=True)
+        self.input_thread.start()
+        
+        # Ждём ввода с таймаутом
         try:
-            name = input("Название объекта: ").strip().lower()
-            
+            name = self.input_queue.get(timeout=30.0)  # 30 секунд на ввод
             if not name:
                 return None
             
-            # Транслитерация кириллицы в латиницу для имён файлов
-            translit_map = {
-                'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
-                'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
-                'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
-                'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
-                'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
-            }
-            
-            # Преобразуем кириллицу в латиницу
-            clean_name = ""
-            for c in name:
-                if c in translit_map:
-                    clean_name += translit_map[c]
-                elif c.isalnum() or c in "-_":
-                    clean_name += c
-                else:
-                    clean_name += "_"
+            # Транслитерация
+            clean_name = self.transliterate(name)
             
             if not clean_name:
                 print("[ERROR] Недопустимое название!")
@@ -299,6 +329,9 @@ class ObjectCaptureApp:
             
             return clean_name
             
+        except queue.Empty:
+            print("\n[TIMEOUT] Время ввода истекло")
+            return None
         except KeyboardInterrupt:
             return None
         except Exception as e:
@@ -306,8 +339,11 @@ class ObjectCaptureApp:
             return None
     
     def select_object_interactive(self):
-        """Интерактивный выбор или создание объекта."""
+        """Интерактивный выбор или создание объекта (неблокирующий)."""
         self.scan_existing_objects()
+        
+        # Показываем сообщение на экране о том, что нужно ввести имя в консоли
+        self.show_message("ВВЕДИТЕ ИМЯ ОБЪЕКТА В КОНСОЛИ!", COLOR_HIGHLIGHT, 2.0)
         
         if self.object_folders:
             print("\n" + "="*60)
@@ -316,18 +352,33 @@ class ObjectCaptureApp:
                 print(f"  {i}. {obj}")
             print(f"  0. Создать новый объект")
             print("="*60)
+            print("Выберите номер (или название нового объекта): ", end="", flush=True)
+            
+            # Запускаем поток для ввода
+            self.input_thread = threading.Thread(target=self.input_worker, daemon=True)
+            self.input_thread.start()
             
             try:
-                choice = input("Выберите номер (или название нового объекта): ").strip()
+                choice = self.input_queue.get(timeout=30.0)
+                
+                if choice is None:
+                    return
                 
                 if choice == "0":
-                    new_name = self.prompt_object_name()
+                    # Создаём новый объект
+                    print("Название нового объекта: ", end="", flush=True)
+                    self.input_thread = threading.Thread(target=self.input_worker, daemon=True)
+                    self.input_thread.start()
+                    new_name = self.input_queue.get(timeout=30.0)
                     if new_name:
-                        self.current_object = new_name
-                        self.object_folders.append(new_name)
-                        self.object_folders.sort()
-                        self.show_message(f"✓ Объект '{new_name}' создан", COLOR_SUCCESS)
-                        print(f"[OK] Создан объект: {new_name}")
+                        clean_name = self.transliterate(new_name)
+                        if clean_name:
+                            self.current_object = clean_name
+                            if clean_name not in self.object_folders:
+                                self.object_folders.append(clean_name)
+                                self.object_folders.sort()
+                            self.show_message(f"✓ Объект '{clean_name}' создан", COLOR_SUCCESS)
+                            print(f"[OK] Создан объект: {clean_name}")
                     return
                 elif choice.isdigit() and 1 <= int(choice) <= len(self.object_folders):
                     self.current_object = self.object_folders[int(choice) - 1]
@@ -335,25 +386,8 @@ class ObjectCaptureApp:
                     print(f"[OK] Выбран объект: {self.current_object}")
                     return
                 elif choice and choice not in ["0"]:
-                    # Пользователь ввёл название напрямую (возможно кириллицей)
-                    # Транслитерация кириллицы в латиницу
-                    translit_map = {
-                        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
-                        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
-                        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
-                        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
-                        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
-                    }
-                    
-                    clean_name = ""
-                    for c in choice.lower():
-                        if c in translit_map:
-                            clean_name += translit_map[c]
-                        elif c.isalnum() or c in "-_":
-                            clean_name += c
-                        else:
-                            clean_name += "_"
-                    
+                    # Пользователь ввёл название напрямую
+                    clean_name = self.transliterate(choice)
                     if clean_name:
                         if clean_name not in self.object_folders:
                             self.object_folders.append(clean_name)
@@ -363,13 +397,16 @@ class ObjectCaptureApp:
                         print(f"[OK] Выбран объект: {clean_name}")
                         return
                         
+            except queue.Empty:
+                print("\n[TIMEOUT] Время ввода истекло")
+                return
             except KeyboardInterrupt:
                 return
             except Exception as e:
                 print(f"[ERROR] Ошибка выбора: {e}")
         else:
             print("\n[INFO] Нет существующих объектов. Создайте первый!")
-            new_name = self.prompt_object_name()
+            new_name = self.prompt_object_name_nonblocking()
             if new_name:
                 self.current_object = new_name
                 self.object_folders.append(new_name)
