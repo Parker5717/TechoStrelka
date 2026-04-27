@@ -489,40 +489,69 @@ def alpha_overlay(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int,
     frame[y1:y2, x1:x2] = cv2.addWeighted(rect, alpha, roi, 1.0 - alpha, 0)
 
 
+def get_cyrillic_font(size=24):
+    """Возвращает PIL-шрифт с поддержкой кириллицы."""
+    # Список путей для поиска шрифтов (Linux, Windows, macOS)
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",      # Linux Debian/Ubuntu
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",                   # Linux Arch
+        "C:\\Windows\\Fonts\\arial.ttf",                         # Windows
+        "/Library/Fonts/Arial.ttf",                              # macOS
+        "arial.ttf",                                             # Текущая директория
+        "DejaVuSans.ttf",                                        # Локальная копия
+    ]
+    for path in font_paths:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    # Если ничего не найдено — используем встроенный шрифт PIL (базовая поддержка Unicode)
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
 def put_text_shadow(img, text, pos, font=cv2.FONT_HERSHEY_DUPLEX,
                     scale=0.75, color=C["white"], thickness=2):
     """Текст с тенью для читаемости на любом фоне."""
     x, y = pos
     # Для кириллицы используем PIL с шрифтом TrueType
-    try:
-        font_pil = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-        img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        draw = ImageDraw.Draw(img_pil)
-        # Тень
-        draw.text((x + 2, y + 2), text, font=font_pil, fill=(0, 0, 0))
-        # Основной текст
-        draw.text((x, y), text, font=font_pil, fill=(int(color[2]), int(color[1]), int(color[0])))
-        img[:] = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-    except Exception:
-        # Fallback на стандартный cv2.putText если PIL не работает
-        cv2.putText(img, text, (x + 2, y + 2), font, scale, C["black"],
-                    thickness + 1, cv2.LINE_AA)
-        cv2.putText(img, text, (x, y), font, scale, color,
-                    thickness, cv2.LINE_AA)
+    font_pil = get_cyrillic_font(int(scale * 32))
+    if font_pil is not None:
+        try:
+            img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(img_pil)
+            # Тень
+            draw.text((x + 2, y + 2), text, font=font_pil, fill=(0, 0, 0))
+            # Основной текст
+            draw.text((x, y), text, font=font_pil, fill=(int(color[2]), int(color[1]), int(color[0])))
+            img[:] = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+            return
+        except Exception:
+            pass
+    # Fallback на стандартный cv2.putText если PIL не работает
+    cv2.putText(img, text, (x + 2, y + 2), font, scale, C["black"],
+                thickness + 1, cv2.LINE_AA)
+    cv2.putText(img, text, (x, y), font, scale, color,
+                thickness, cv2.LINE_AA)
 
 
 def put_text_cv2(img, text, pos, font=cv2.FONT_HERSHEY_SIMPLEX,
                  scale=0.48, color=C["white"], thickness=1):
     """Рендеринг текста с кириллицей через PIL."""
     x, y = pos
-    try:
-        font_pil = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", int(scale * 32))
-        img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        draw = ImageDraw.Draw(img_pil)
-        draw.text((x, y), text, font=font_pil, fill=(int(color[2]), int(color[1]), int(color[0])))
-        img[:] = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-    except Exception:
-        cv2.putText(img, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
+    font_pil = get_cyrillic_font(int(scale * 32))
+    if font_pil is not None:
+        try:
+            img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(img_pil)
+            draw.text((x, y), text, font=font_pil, fill=(int(color[2]), int(color[1]), int(color[0])))
+            img[:] = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+            return
+        except Exception:
+            pass
+    cv2.putText(img, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
 
 
 def draw_yolo_boxes(frame: np.ndarray, results, person_box: Optional[Tuple]):
