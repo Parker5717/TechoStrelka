@@ -56,6 +56,7 @@ import argparse
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Tuple
+from PIL import ImageFont, ImageDraw, Image
 
 # ══════════════════════════════════════════════════════════════════
 #  ЗАВИСИМОСТИ (с graceful fallback — прототип не упадёт без них)
@@ -482,10 +483,36 @@ def put_text_shadow(img, text, pos, font=cv2.FONT_HERSHEY_DUPLEX,
                     scale=0.75, color=C["white"], thickness=2):
     """Текст с тенью для читаемости на любом фоне."""
     x, y = pos
-    cv2.putText(img, text, (x + 2, y + 2), font, scale, C["black"],
-                thickness + 1, cv2.LINE_AA)
-    cv2.putText(img, text, (x, y), font, scale, color,
-                thickness, cv2.LINE_AA)
+    # Для кириллицы используем PIL с шрифтом TrueType
+    try:
+        font_pil = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
+        img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(img_pil)
+        # Тень
+        draw.text((x + 2, y + 2), text, font=font_pil, fill=(0, 0, 0))
+        # Основной текст
+        draw.text((x, y), text, font=font_pil, fill=(int(color[2]), int(color[1]), int(color[0])))
+        img[:] = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+    except Exception:
+        # Fallback на стандартный cv2.putText если PIL не работает
+        cv2.putText(img, text, (x + 2, y + 2), font, scale, C["black"],
+                    thickness + 1, cv2.LINE_AA)
+        cv2.putText(img, text, (x, y), font, scale, color,
+                    thickness, cv2.LINE_AA)
+
+
+def put_text_cv2(img, text, pos, font=cv2.FONT_HERSHEY_SIMPLEX,
+                 scale=0.48, color=C["white"], thickness=1):
+    """Рендеринг текста с кириллицей через PIL."""
+    x, y = pos
+    try:
+        font_pil = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", int(scale * 32))
+        img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(img_pil)
+        draw.text((x, y), text, font=font_pil, fill=(int(color[2]), int(color[1]), int(color[0])))
+        img[:] = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+    except Exception:
+        cv2.putText(img, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
 
 
 def draw_yolo_boxes(frame: np.ndarray, results, person_box: Optional[Tuple]):
@@ -518,8 +545,8 @@ def draw_yolo_boxes(frame: np.ndarray, results, person_box: Optional[Tuple]):
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.rectangle(frame, (x1, y1 - 22), (x1 + len(label) * 9, y1),
                           color, -1)
-            cv2.putText(frame, label, (x1 + 3, y1 - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, C["black"], 1, cv2.LINE_AA)
+            put_text_cv2(frame, label, (x1 + 3, y1 - 5),
+                        scale=0.48, color=C["black"], thickness=1)
 
 
 def draw_ppe_panel(frame: np.ndarray, st: AppState):
@@ -584,13 +611,13 @@ def draw_status_bar(frame: np.ndarray, st: AppState):
                     font=cv2.FONT_HERSHEY_DUPLEX, scale=0.70, color=color)
 
     # Подсказка (маленьким шрифтом)
-    cv2.putText(frame, meta["hint"], (14, h - BAR_H + 58),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, C["white"], 1, cv2.LINE_AA)
+    put_text_cv2(frame, meta["hint"], (14, h - BAR_H + 58),
+                scale=0.48, color=C["white"])
 
     # ── Safety Score (правая часть) ───────────────────────────
     sx = w - 165
-    cv2.putText(frame, "SAFETY SCORE", (sx, h - BAR_H + 22),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40, (180, 180, 180), 1, cv2.LINE_AA)
+    put_text_cv2(frame, "SAFETY SCORE", (sx, h - BAR_H + 22),
+                scale=0.40, color=(180, 180, 180))
     put_text_shadow(frame, f"{st.score:3d} / 100", (sx, h - BAR_H + 54),
                     font=cv2.FONT_HERSHEY_DUPLEX, scale=0.88, color=color)
     # Прогресс-бар очков
@@ -602,8 +629,8 @@ def draw_status_bar(frame: np.ndarray, st: AppState):
         cv2.rectangle(frame, (bx1, by), (bx1 + fill_w, by + 9), color, -1)
 
     # Лого
-    cv2.putText(frame, "KASBOT v1.0", (14, h - 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (80, 80, 80), 1, cv2.LINE_AA)
+    put_text_cv2(frame, "KASBOT v1.0", (14, h - 6),
+                scale=0.38, color=(80, 80, 80))
 
 
 def draw_ar_guide(frame: np.ndarray, st: AppState):
@@ -673,8 +700,8 @@ def draw_ar_guide(frame: np.ndarray, st: AppState):
         cv2.rectangle(frame, (bx1, by), (bx2, by + 10), (55, 55, 55), -1)
         cv2.rectangle(frame, (bx1, by),
                       (bx1 + int(bar_len * progress), by + 10), color, -1)
-        cv2.putText(frame, "Удержи кадр...", (bx1, by + 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, C["white"], 1, cv2.LINE_AA)
+        put_text_cv2(frame, "Удержи кадр...", (bx1, by + 26),
+                    scale=0.45, color=C["white"])
 
 
 def draw_access_banner(frame: np.ndarray, st: AppState):
@@ -771,8 +798,8 @@ def draw_demo_hint(frame: np.ndarray, demo_mode: bool, st: AppState):
                   C["dark_bg"], alpha=0.72)
     for i, (text, active) in enumerate(hints):
         color = C["green"] if active else (130, 130, 130)
-        cv2.putText(frame, text, (w - 168, 26 + i * 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 1, cv2.LINE_AA)
+        put_text_cv2(frame, text, (w - 168, 26 + i * 22),
+                    scale=0.43, color=color)
 
 
 def draw_hand_status(frame: np.ndarray, hand_up: bool):
@@ -909,9 +936,9 @@ def main():
         draw_demo_hint(frame, args.demo, st)
 
         # FPS в углу
-        cv2.putText(frame, f"{fps_val:.0f} fps",
+        put_text_cv2(frame, f"{fps_val:.0f} fps",
                     (fw - 72, fh - 96),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (80, 80, 80), 1)
+                    scale=0.40, color=(80, 80, 80))
 
         cv2.imshow("КАСБОТ — ИИ-наставник | Technostrelka 2026", frame)
 
