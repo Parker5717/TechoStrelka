@@ -72,14 +72,24 @@ except ImportError:
 # MediaPipe — для детекции рук (опционально, но очень эффективно)
 try:
     import mediapipe as mp
-    _mp_hands_solution = mp.solutions.hands
-    _mp_drawing = mp.solutions.drawing_utils
+    # Совместимость с разными версиями MediaPipe
+    if hasattr(mp, 'solutions'):
+        _mp_hands_solution = mp.solutions.hands
+        _mp_drawing = mp.solutions.drawing_utils
+    else:
+        # Для новых версий MediaPipe (0.12+)
+        from mediapipe.solutions import hands as _mp_hands_solution
+        from mediapipe.solutions import drawing_utils as _mp_drawing
     MEDIAPIPE_AVAILABLE = True
     print("[OK] MediaPipe подключён — трекинг рук активен")
 except ImportError:
     MEDIAPIPE_AVAILABLE = False
     print("[INFO] MediaPipe не найден — трекинг рук отключён")
     print("       Установите: pip install mediapipe")
+except AttributeError:
+    MEDIAPIPE_AVAILABLE = False
+    print("[INFO] MediaPipe установлен, но версия несовместима — трекинг рук отключён")
+    print("       Попробуйте обновить: pip install --upgrade mediapipe")
 
 
 # ══════════════════════════════════════════════════════════════════
