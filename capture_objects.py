@@ -43,6 +43,12 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+# Поддержка кириллицы в консоли Windows
+if sys.platform == 'win32':
+    import codecs
+    sys.stdin = codecs.getreader('utf-8')(sys.stdin.buffer)
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
+
 
 # ══════════════════════════════════════════════════════════════════
 #  КОНФИГУРАЦИЯ
@@ -233,7 +239,8 @@ class ObjectCaptureApp:
     def prompt_object_name(self) -> str:
         """Запрашивает у пользователя название объекта."""
         print("\n" + "="*60)
-        print("Введите название объекта (например: button, chair, panel)")
+        print("Введите название объекта (например: кнопка, выключатель, шлем)")
+        print("Можно использовать кириллицу! Будет преобразовано в латиницу.")
         print("Нажмите Enter для подтверждения или просто Enter для отмены")
         print("="*60)
         
@@ -243,8 +250,24 @@ class ObjectCaptureApp:
             if not name:
                 return None
             
-            # Очищаем название от недопустимых символов
-            clean_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+            # Транслитерация кириллицы в латиницу для имён файлов
+            translit_map = {
+                'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+                'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+                'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+                'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+                'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+            }
+            
+            # Преобразуем кириллицу в латиницу
+            clean_name = ""
+            for c in name:
+                if c in translit_map:
+                    clean_name += translit_map[c]
+                elif c.isalnum() or c in "-_":
+                    clean_name += c
+                else:
+                    clean_name += "_"
             
             if not clean_name:
                 print("[ERROR] Недопустимое название!")
@@ -288,8 +311,25 @@ class ObjectCaptureApp:
                     print(f"[OK] Выбран объект: {self.current_object}")
                     return
                 elif choice and choice not in ["0"]:
-                    # Пользователь ввёл название напрямую
-                    clean_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in choice)
+                    # Пользователь ввёл название напрямую (возможно кириллицей)
+                    # Транслитерация кириллицы в латиницу
+                    translit_map = {
+                        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+                        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+                        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+                        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+                        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+                    }
+                    
+                    clean_name = ""
+                    for c in choice.lower():
+                        if c in translit_map:
+                            clean_name += translit_map[c]
+                        elif c.isalnum() or c in "-_":
+                            clean_name += c
+                        else:
+                            clean_name += "_"
+                    
                     if clean_name:
                         if clean_name not in self.object_folders:
                             self.object_folders.append(clean_name)

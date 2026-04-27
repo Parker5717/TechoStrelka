@@ -1,1 +1,1 @@
-Nothing needs to be added to .gitignore since only a Python source file (`capture_objects.py`) was added, and no build artifacts, dependencies, or temporary files are present in the changes.
+Nothing should be ignored since only a Python source file (`capture_objects.py`) was modified and there are no build artifacts, dependencies, or temporary files in the changes.
