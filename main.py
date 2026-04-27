@@ -70,26 +70,38 @@ except ImportError:
     print("[!] YOLO недоступен. Установите: pip install ultralytics")
 
 # MediaPipe — для детекции рук (опционально, но очень эффективно)
+MEDIAPIPE_AVAILABLE = False
 try:
     import mediapipe as mp
     # Совместимость с разными версиями MediaPipe
     if hasattr(mp, 'solutions'):
+        # Старые версии MediaPipe (< 0.10)
         _mp_hands_solution = mp.solutions.hands
         _mp_drawing = mp.solutions.drawing_utils
+        _mp_hands_module = mp.solutions
+        MEDIAPIPE_AVAILABLE = True
+    elif hasattr(mp.tasks, 'vision') and hasattr(mp.tasks.vision, 'HandLandmarker'):
+        # Новые версии MediaPipe (>= 0.10) — используем Tasks API
+        _mp_hands_module = mp.tasks.vision
+        _mp_hands_solution = None  # Будет использоваться HandLandmarker
+        _mp_drawing = None  # Рисование вручную через landmarks
+        MEDIAPIPE_AVAILABLE = True
     else:
-        # Для новых версий MediaPipe (0.12+)
+        # Пробуем старый импорт для совместимости
         from mediapipe.solutions import hands as _mp_hands_solution
         from mediapipe.solutions import drawing_utils as _mp_drawing
-    MEDIAPIPE_AVAILABLE = True
-    print("[OK] MediaPipe подключён — трекинг рук активен")
+        _mp_hands_module = mp.solutions
+        MEDIAPIPE_AVAILABLE = True
+    
+    if MEDIAPIPE_AVAILABLE:
+        print("[OK] MediaPipe подключён — трекинг рук активен")
 except ImportError:
     MEDIAPIPE_AVAILABLE = False
     print("[INFO] MediaPipe не найден — трекинг рук отключён")
     print("       Установите: pip install mediapipe")
-except AttributeError:
+except Exception as e:
     MEDIAPIPE_AVAILABLE = False
-    print("[INFO] MediaPipe установлен, но версия несовместима — трекинг рук отключён")
-    print("       Попробуйте обновить: pip install --upgrade mediapipe")
+    print(f"[INFO] MediaPipe установлен, но возникла ошибка: {e} — трекинг рук отключён")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -353,13 +365,29 @@ def detect_equipment(results, fh: int, fw: int) -> bool:
 #  CV-СЛОЙ:  МЕДИАПАЙП (РУКИ)
 # ══════════════════════════════════════════════════════════════════
 
-_mp_hands_instance = None  # ленивая инициализация
+_mp_hands_instance = None  # ленивая инициализация для старого API
+_mp_hands_task = None      # ленивая инициализация для нового Tasks API
 
 def get_mp_hands():
     """Возвращает (и создаёт при первом вызове) экземпляр Hands."""
-    global _mp_hands_instance
+    global _mp_hands_instance, _mp_hands_task
     if not MEDIAPIPE_AVAILABLE:
         return None
+    
+    # Новый API (MediaPipe >= 0.10)
+    if _mp_hands_solution is None and hasattr(mp.tasks, 'vision') and hasattr(mp.tasks.vision, 'HandLandmarker'):
+        if _mp_hands_task is None:
+            vision = mp.tasks.vision
+            base_options = mp.tasks.BaseOptions(model_asset_path='hand_landmarker.task')
+            options = vision.HandLandmarkerOptions(base_options=base_options, running_mode=vision.RunningMode.IMAGE)
+            try:
+                _mp_hands_task = vision.HandLandmarker.create_from_options(options)
+            except Exception:
+                # Если модель не найдена, пробуем без неё (для совместимости)
+                return None
+        return _mp_hands_task
+    
+    # Старый API (MediaPipe < 0.10)
     if _mp_hands_instance is None:
         _mp_hands_instance = _mp_hands_solution.Hands(
             static_image_mode=False,
@@ -381,6 +409,23 @@ def detect_raised_hand(frame: np.ndarray) -> bool:
     просто объект. Это делает интерфейс живым и интуитивным для
     молодого сотрудника, привыкшего к сенсорным экранам.
     """
+    # Новый API
+    if _mp_hands_solution is None and _mp_hands_task is not None:
+        try:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            result = _mp_hands_task.detect(mp_image)
+            if not result.hand_landmarks:
+                return False
+            h = frame.shape[0]
+            for lm in result.hand_landmarks:
+                # landmark[0] = запястье; если выше 60% высоты — рука поднята
+                if lm[0].y < 0.60:
+                    return True
+        except Exception:
+            pass
+        return False
+    
+    # Старый API
     hands = get_mp_hands()
     if hands is None:
         return False
@@ -403,6 +448,36 @@ def draw_hand_landmarks(frame: np.ndarray):
     """Рисуем скелет руки (для наглядности на демо)."""
     if not MEDIAPIPE_AVAILABLE:
         return
+    
+    # Новый API - рисуем вручную
+    if _mp_hands_solution is None and _mp_hands_task is not None:
+        try:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            result = _mp_hands_task.detect(mp_image)
+            if result.hand_landmarks:
+                for lm_list in result.hand_landmarks:
+                    # Рисуем точки и соединения вручную
+                    h, w = frame.shape[:2]
+                    points = [(int(lm.x * w), int(lm.y * h)) for lm in lm_list]
+                    # Соединения между точками (стандартная схема MediaPipe)
+                    connections = [
+                        (0, 1), (1, 2), (2, 3), (3, 4),  # большой палец
+                        (0, 5), (5, 6), (6, 7), (7, 8),  # указательный
+                        (0, 9), (9, 10), (10, 11), (11, 12),  # средний
+                        (0, 13), (13, 14), (14, 15), (15, 16),  # безымянный
+                        (0, 17), (17, 18), (18, 19), (19, 20),  # мизинец
+                        (5, 9), (9, 13), (13, 17)  # соединения между пальцами
+                    ]
+                    for p1_idx, p2_idx in connections:
+                        pt1, pt2 = points[p1_idx], points[p2_idx]
+                        cv2.line(frame, pt1, pt2, C["cyan"], 2)
+                    for pt in points:
+                        cv2.circle(frame, pt, 3, C["white"], -1)
+        except Exception:
+            pass
+        return
+    
+    # Старый API
     hands = get_mp_hands()
     if hands is None:
         return
