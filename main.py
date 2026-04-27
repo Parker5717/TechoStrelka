@@ -377,8 +377,8 @@ def get_mp_hands():
     # Новый API (MediaPipe >= 0.10)
     if _mp_hands_solution is None and hasattr(mp.tasks, 'vision') and hasattr(mp.tasks.vision, 'HandLandmarker'):
         if _mp_hands_task is None:
-            from mediapipe.tasks import vision
-            base_options = vision.BaseOptions(model_asset_path='hand_landmarker.task')
+            vision = mp.tasks.vision
+            base_options = mp.tasks.BaseOptions(model_asset_path='hand_landmarker.task')
             options = vision.HandLandmarkerOptions(base_options=base_options, running_mode=vision.RunningMode.IMAGE)
             try:
                 _mp_hands_task = vision.HandLandmarker.create_from_options(options)
