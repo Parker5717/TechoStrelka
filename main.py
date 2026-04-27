@@ -157,7 +157,8 @@ USER_OBJECTS_DIR = Path("captured_objects")
 
 CONFIRM_FRAMES  = 28    # кадров для уверенной детекции (≈1 сек при 30fps)
 MIN_STATE_TIME  = 1.5   # секунд — минимум в состоянии до перехода
-YOLO_INTERVAL   = 3     # каждые N кадров запускаем YOLO (экономия CPU)
+YOLO_INTERVAL   = 5     # каждые N кадров запускаем YOLO (экономия CPU) - увеличено для производительности
+TEMPLATE_CHECK_INTERVAL = 2  # Проверка пользовательских объектов каждые N кадров
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -384,6 +385,7 @@ def load_user_objects():
     Загружает пользовательские объекты из папки captured_objects/.
     Каждый подпапка = отдельный объект для распознавания.
     Сохраняем шаблоны для последующего template matching.
+    ВАЖНО: сохраняем только объект без фона (обрезка по контуру).
     """
     global USER_OBJECTS, USER_TEMPLATES
     
@@ -410,6 +412,9 @@ def load_user_objects():
             try:
                 template = cv2.imread(str(img_path))
                 if template is not None:
+                    # Обрезаем фон - оставляем только объект по контуру
+                    template = extract_object_from_background(template)
+                    
                     # Уменьшаем до разумного размера для скорости
                     max_dim = 150
                     h, w = template.shape[:2]
@@ -426,7 +431,83 @@ def load_user_objects():
         else:
             print(f"  • {obj_name} → class_id={class_id} (нет шаблонов)")
     
-    print("[INFO] Для распознавания будет использоваться template matching\n")
+    print("[INFO] Для распознавания будет использоваться template matching с удалением фона\n")
+
+
+def extract_object_from_background(image: np.ndarray, threshold: int = 10) -> np.ndarray:
+    """
+    Вырезает объект из фона на изображении.
+    Использует комбинированный подход: пороговая обработка + градиенты.
+    Находит контур объекта и обрезает изображение по bounding box контура.
+    Если объект занимает >80% кадра, возвращается оригинальное изображение.
+    
+    Args:
+        image: Исходное изображение BGR
+        threshold: Порог различия между объектом и фоном (чем больше, тем строже)
+    
+    Returns:
+        Изображение с вырезанным объектом (обрезанное по контуру)
+    """
+    if image is None or image.size == 0:
+        return image
+    
+    h, w = image.shape[:2]
+    
+    # Конвертируем в оттенки серого
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Метод 1: Простая пороговая обработка для однородного фона
+    # Предполагаем, что фон светлый (240-255), а объект темнее
+    _, binary_simple = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+    
+    # Метод 2: Градиентный метод для сложных случаев
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    gradient = np.sqrt(grad_x**2 + grad_y**2)
+    gradient = np.uint8(gradient / (gradient.max() + 1e-6) * 255)
+    _, binary_grad = cv2.threshold(gradient, threshold, 255, cv2.THRESH_BINARY)
+    
+    # Комбинируем оба метода (логическое ИЛИ)
+    binary = cv2.bitwise_or(binary_simple, binary_grad)
+    
+    # Морфологические операции для удаления шума и соединения контуров
+    kernel = np.ones((3, 3), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    # Ищем контуры
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        # Если контуров нет, возвращаем оригинал
+        return image
+    
+    # Находим самый большой контур (предполагаем, что это наш объект)
+    largest_contour = max(contours, key=cv2.contourArea)
+    
+    # Проверяем, что контур достаточно большой (>5% от изображения)
+    contour_area = cv2.contourArea(largest_contour)
+    if contour_area < (h * w * 0.05):
+        return image
+    
+    # Получаем bounding box контура
+    x, y, bw, bh = cv2.boundingRect(largest_contour)
+    
+    # Если объект занимает почти всё изображение, возвращаем оригинал
+    if bw > w * 0.8 and bh > h * 0.8:
+        return image
+    
+    # Добавляем небольшую рамку вокруг объекта (padding)
+    padding = 5
+    x1 = max(0, x - padding)
+    y1 = max(0, y - padding)
+    x2 = min(w, x + bw + padding)
+    y2 = min(h, y + bh + padding)
+    
+    # Обрезаем изображение по bounding box
+    cropped = image[y1:y2, x1:x2]
+    
+    return cropped if cropped.size > 0 else image
 
 
 # Глобальное хранилище шаблонов
@@ -1191,7 +1272,11 @@ def main():
             hand_up = False
 
         # ══ CV-СЛОЙ: ДЕТЕКЦИЯ ПОЛЬЗОВАТЕЛЬСКИХ ОБЪЕКТОВ ═══════════
-        user_detected = detect_user_objects_template(frame, threshold=0.65)
+        # Проверка пользовательских объектов не каждый кадр (экономия CPU)
+        if frame_idx % TEMPLATE_CHECK_INTERVAL == 0:
+            user_detected = detect_user_objects_template(frame, threshold=0.65)
+        else:
+            user_detected = []
         
         try:
             target_found, target_name, target_bbox = detect_equipment(yolo_results, fh, fw)
