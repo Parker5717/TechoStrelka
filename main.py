@@ -55,8 +55,9 @@ import time
 import argparse
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 from PIL import ImageFont, ImageDraw, Image
+from pathlib import Path
 
 # ══════════════════════════════════════════════════════════════════
 #  ЗАВИСИМОСТИ (с graceful fallback — прототип не упадёт без них)
@@ -148,6 +149,11 @@ COCO_EQUIPMENT = {
     39: "оборудование",   # bottle (любой цилиндрический объект)
     76: "инструмент",     # scissors
 }
+
+# Загружаемые пользовательские объекты из captured_objects/
+# Формат: {class_id: "название"}
+USER_OBJECTS = {}
+USER_OBJECTS_DIR = Path("captured_objects")
 
 CONFIRM_FRAMES  = 28    # кадров для уверенной детекции (≈1 сек при 30fps)
 MIN_STATE_TIME  = 1.5   # секунд — минимум в состоянии до перехода
@@ -335,14 +341,16 @@ def get_largest_person(results) -> Optional[Tuple]:
     return best_box
 
 
-def detect_equipment(results, fh: int, fw: int) -> bool:
+def detect_equipment(results, fh: int, fw: int) -> Tuple[bool, Optional[str], Optional[Tuple]]:
     """
     Определяет, что камера направлена на рабочее оборудование.
-    Логика: ищем объект из COCO_EQUIPMENT ИЛИ любой достаточно
-    крупный объект в нижней половине кадра (рабочая поверхность).
+    Возвращает: (найдено_ли, название_объекта, bbox)
+    Логика: ищем объект из COCO_EQUIPMENT ИЛИ пользовательские объекты
+    ИЛИ любой достаточно крупный объект в нижней половине кадра.
     """
     if results is None:
-        return False
+        return False, None, None
+    
     for r in results:
         if r.boxes is None:
             continue
@@ -351,14 +359,123 @@ def detect_equipment(results, fh: int, fw: int) -> bool:
             conf = float(box.conf[0])
             if conf < 0.4:
                 continue
+            
+            # Проверяем пользовательские объекты
+            if cls in USER_OBJECTS:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                return True, USER_OBJECTS[cls], (x1, y1, x2, y2)
+            
+            # Проверяем стандартные COCO объекты
             if cls in COCO_EQUIPMENT:
-                return True
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                return True, COCO_EQUIPMENT[cls], (x1, y1, x2, y2)
+            
             # Fallback: крупный объект в нижней части кадра = стол/стенд
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             if y1 > fh * 0.35:
                 if (x2 - x1) * (y2 - y1) > fh * fw * 0.06:
-                    return True
-    return False
+                    return True, "оборудование", (x1, y1, x2, y2)
+    
+    return False, None, None
+
+
+def load_user_objects():
+    """
+    Загружает пользовательские объекты из папки captured_objects/.
+    Каждый подпапка = отдельный объект для распознавания.
+    Сохраняем шаблоны для последующего template matching.
+    """
+    global USER_OBJECTS, USER_TEMPLATES
+    
+    if not USER_OBJECTS_DIR.exists():
+        print(f"[INFO] Папка {USER_OBJECTS_DIR} не найдена — пользовательские объекты не загружены")
+        return
+    
+    subdirs = [d for d in USER_OBJECTS_DIR.iterdir() if d.is_dir()]
+    if not subdirs:
+        print(f"[INFO] В {USER_OBJECTS_DIR} нет подпапок — пользовательские объекты не загружены")
+        return
+    
+    print(f"\n[INFO] Найдено пользовательских объектов: {len(subdirs)}")
+    USER_TEMPLATES = {}  # {название: [список шаблонов]}
+    
+    for i, obj_dir in enumerate(subdirs, 1):
+        class_id = 100 + i
+        obj_name = obj_dir.name
+        USER_OBJECTS[class_id] = obj_name
+        
+        # Загружаем все изображения из папки как шаблоны
+        templates = []
+        for img_path in obj_dir.glob("*.jpg"):
+            try:
+                template = cv2.imread(str(img_path))
+                if template is not None:
+                    # Уменьшаем до разумного размера для скорости
+                    max_dim = 150
+                    h, w = template.shape[:2]
+                    scale = min(max_dim / h, max_dim / w) if h > max_dim or w > max_dim else 1.0
+                    if scale < 1.0:
+                        template = cv2.resize(template, (int(w * scale), int(h * scale)))
+                    templates.append(template)
+            except Exception as e:
+                print(f"  [WARN] Не удалось загрузить {img_path}: {e}")
+        
+        if templates:
+            USER_TEMPLATES[obj_name] = templates
+            print(f"  • {obj_name} → class_id={class_id}, шаблонов: {len(templates)}")
+        else:
+            print(f"  • {obj_name} → class_id={class_id} (нет шаблонов)")
+    
+    print("[INFO] Для распознавания будет использоваться template matching\n")
+
+
+# Глобальное хранилище шаблонов
+USER_TEMPLATES = {}
+
+
+def detect_user_objects_template(frame: np.ndarray, threshold: float = 0.6) -> List[Tuple[str, Tuple]]:
+    """
+    Распознаёт пользовательские объекты через template matching.
+    Возвращает список кортежей: [(название, bbox), ...]
+    """
+    if not USER_TEMPLATES:
+        return []
+    
+    detected = []
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    fh, fw = gray_frame.shape
+    
+    for obj_name, templates in USER_TEMPLATES.items():
+        best_match = None
+        best_val = 0
+        
+        for template in templates:
+            if template is None:
+                continue
+            
+            gray_template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            th, tw = gray_template.shape[:2]
+            
+            if th > fh or tw > fw:
+                continue
+            
+            # Template matching
+            try:
+                result = cv2.matchTemplate(gray_frame, gray_template, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                
+                if max_val > best_val and max_val >= threshold:
+                    best_val = max_val
+                    best_match = (max_loc, (tw, th))
+            except Exception:
+                continue
+        
+        if best_match:
+            (x, y), (w, h) = best_match
+            bbox = (float(x), float(y), float(x + w), float(y + h))
+            detected.append((obj_name, bbox))
+    
+    return detected
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -500,7 +617,7 @@ def draw_hand_landmarks(frame: np.ndarray):
 #  FSM-СЛОЙ:  ОБНОВЛЕНИЕ СОСТОЯНИЯ
 # ══════════════════════════════════════════════════════════════════
 
-def update_fsm(st: AppState, ppe: Dict, hand_up: bool, target_found: bool):
+def update_fsm(st: AppState, ppe: Dict, hand_up: bool, target_found: bool, target_name: Optional[str] = None):
     """
     Центральная логика FSM. Вызывается каждый кадр.
 
@@ -533,7 +650,7 @@ def update_fsm(st: AppState, ppe: Dict, hand_up: bool, target_found: bool):
             st.try_advance(State.STEP1_WORKSTATION)
 
     elif st.current == State.STEP1_WORKSTATION:
-        # Ищем рабочее место в кадре
+        # Ищем рабочее место в кадре (включая пользовательские объекты)
         found = target_found
         st.target_cnt = st.target_cnt + 1 if found else max(0, st.target_cnt - 1)
         if st.target_cnt >= CONFIRM_FRAMES:
@@ -654,38 +771,57 @@ def put_text_cv2(img, text, pos, font=cv2.FONT_HERSHEY_SIMPLEX,
     cv2.putText(img, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
 
 
-def draw_yolo_boxes(frame: np.ndarray, results, person_box: Optional[Tuple]):
+def draw_yolo_boxes(frame: np.ndarray, results, person_box: Optional[Tuple], 
+                    detected_objects: List[Tuple[str, Tuple]] = None):
     """
     Рисуем bounding boxes от YOLO.
-    Синий = оператор, оранжевый = оборудование/объект.
+    Синий = оператор, оранжевый = оборудование/объект, зелёный = пользовательские объекты.
+    detected_objects: список кортежей (название, bbox) для отображения
     """
-    if results is None:
+    if results is None and not detected_objects:
         return
-
-    for r in results:
-        if r.boxes is None:
-            continue
-        for box in r.boxes:
-            cls  = int(box.cls[0])
-            conf = float(box.conf[0])
-            if conf < 0.4:
+    
+    # Рисуем стандартные YOLO боксы
+    if results:
+        for r in results:
+            if r.boxes is None:
                 continue
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+            for box in r.boxes:
+                cls  = int(box.cls[0])
+                conf = float(box.conf[0])
+                if conf < 0.4:
+                    continue
+                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
 
-            if cls == COCO_PERSON:
-                color = C["blue"]
-                label = f"Оператор {conf:.0%}"
-            elif cls in COCO_EQUIPMENT:
-                color = C["orange"]
-                label = f"{COCO_EQUIPMENT[cls]} {conf:.0%}"
-            else:
-                continue
+                if cls == COCO_PERSON:
+                    color = C["blue"]
+                    label = f"Оператор {conf:.0%}"
+                elif cls in USER_OBJECTS:
+                    color = C["green"]
+                    label = f"{USER_OBJECTS[cls]} {conf:.0%}"
+                elif cls in COCO_EQUIPMENT:
+                    color = C["orange"]
+                    label = f"{COCO_EQUIPMENT[cls]} {conf:.0%}"
+                else:
+                    continue
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.rectangle(frame, (x1, y1 - 22), (x1 + len(label) * 9, y1),
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(frame, (x1, y1 - 22), (x1 + len(label) * 9, y1),
+                              color, -1)
+                put_text_cv2(frame, label, (x1 + 3, y1 - 5),
+                            scale=0.48, color=C["black"], thickness=1)
+    
+    # Рисуем обнаруженные пользовательские объекты
+    if detected_objects:
+        for name, bbox in detected_objects:
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            color = C["green"]
+            label = f"{name}"
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+            cv2.rectangle(frame, (x1, y1 - 24), (x1 + len(label) * 10, y1),
                           color, -1)
-            put_text_cv2(frame, label, (x1 + 3, y1 - 5),
-                        scale=0.48, color=C["black"], thickness=1)
+            put_text_cv2(frame, label, (x1 + 4, y1 - 6),
+                        scale=0.52, color=C["white"], thickness=2)
 
 
 def draw_ppe_panel(frame: np.ndarray, st: AppState):
@@ -996,6 +1132,9 @@ def main():
             print(f"[WARN] YOLO недоступен: {e}")
             print("       Продолжаем с HSV-детекцией")
 
+    # ── Загружаем пользовательские объекты ────────────────────────
+    load_user_objects()
+
     # ── Состояние приложения ──────────────────────────────────────
     st = AppState()
 
@@ -1051,16 +1190,32 @@ def main():
         except Exception:
             hand_up = False
 
+        # ══ CV-СЛОЙ: ДЕТЕКЦИЯ ПОЛЬЗОВАТЕЛЬСКИХ ОБЪЕКТОВ ═══════════
+        user_detected = detect_user_objects_template(frame, threshold=0.65)
+        
         try:
-            target_found = detect_equipment(yolo_results, fh, fw)
+            target_found, target_name, target_bbox = detect_equipment(yolo_results, fh, fw)
         except Exception:
-            target_found = False
+            target_found, target_name, target_bbox = False, None, None
+        
+        # Объединяем результаты: если найдены пользовательские объекты, используем их
+        if user_detected:
+            # Берём первый найденный пользовательский объект как основной
+            target_name, target_bbox = user_detected[0]
+            target_found = True
 
         # ══ FSM-СЛОЙ: ОБНОВЛЕНИЕ ═════════════════════════════════
-        update_fsm(st, ppe, hand_up, target_found)
+        update_fsm(st, ppe, hand_up, target_found, target_name)
 
         # ══ UI-СЛОЙ: РЕНДЕРИНГ ═══════════════════════════════════
-        draw_yolo_boxes(frame, yolo_results, person_box)
+        detected_objects = []
+        if target_name and target_bbox:
+            detected_objects.append((target_name, target_bbox))
+        # Добавляем остальные пользовательские объекты для отображения
+        for name, bbox in user_detected:
+            if (name, bbox) not in detected_objects:
+                detected_objects.append((name, bbox))
+        draw_yolo_boxes(frame, yolo_results, person_box, detected_objects if detected_objects else None)
         draw_hand_landmarks(frame)
 
         draw_ppe_panel(frame, st)
