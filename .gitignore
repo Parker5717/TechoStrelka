@@ -1,17 +1,20 @@
 ```
 # Compiled Python files
-__pycache__/
 *.pyc
-*.pyo
-*.pyd
+__pycache__/
 
-# Dependencies
+# Virtual environments
 .venv/
 venv/
 env/
-requirements.txt.bak
 
-# Logs and temp files
+# Dependencies
+node_modules/
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+
+# Logs and temporary files
 *.log
 *.tmp
 *.swp
@@ -25,10 +28,18 @@ requirements.txt.bak
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Build outputs
+dist/
+build/
+target/
 ```

@@ -489,27 +489,52 @@ def alpha_overlay(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int,
     frame[y1:y2, x1:x2] = cv2.addWeighted(rect, alpha, roi, 1.0 - alpha, 0)
 
 
+# Глобальный кэш для шрифта
+_cached_cyrillic_font = {}
+
 def get_cyrillic_font(size=24):
     """Возвращает PIL-шрифт с поддержкой кириллицы."""
+    # Используем кэш чтобы не искать шрифт каждый кадр
+    if size in _cached_cyrillic_font:
+        return _cached_cyrillic_font[size]
+    
     # Список путей для поиска шрифтов (Linux, Windows, macOS)
     font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",      # Linux Debian/Ubuntu
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",                   # Linux Arch
-        "C:\\Windows\\Fonts\\arial.ttf",                         # Windows
-        "/Library/Fonts/Arial.ttf",                              # macOS
-        "arial.ttf",                                             # Текущая директория
-        "DejaVuSans.ttf",                                        # Локальная копия
+        # Windows пути
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/times.ttf", 
+        "C:/Windows/Fonts/cour.ttf",
+        "C:/Windows/Fonts/verdana.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+        # Linux пути
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        # macOS пути
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Arial.ttf",
+        # Локальные копии
+        "arial.ttf",
+        "DejaVuSans.ttf",
     ]
+    
+    font = None
     for path in font_paths:
         try:
-            return ImageFont.truetype(path, size)
+            font = ImageFont.truetype(path, size)
+            break
         except Exception:
             continue
-    # Если ничего не найдено — используем встроенный шрифт PIL (базовая поддержка Unicode)
-    try:
-        return ImageFont.load_default()
-    except Exception:
-        return None
+    
+    if font is None:
+        # Fallback: пробуем загрузить default
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+    
+    _cached_cyrillic_font[size] = font
+    return font
 
 
 def put_text_shadow(img, text, pos, font=cv2.FONT_HERSHEY_DUPLEX,
