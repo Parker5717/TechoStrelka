@@ -1,6 +1,6 @@
-# КАСБОТ v1.0
+# Casper AI BOT v1.0
 ## ИИ-наставник первого дня на заводе
-**Technostrelka 2026 | CV-трек | Кейс Kaspersky**
+**Technostrelka 2026 | CV-трек | Кейс Casper AI**
 
 ---
 
